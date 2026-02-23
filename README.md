@@ -59,6 +59,29 @@ The MCP server will be available at: `http://localhost:3001/mcp`
 
 To learn how to connect this server to a declarative agent for Microsoft 365 Copilot, see [Build declarative agents for Microsoft 365 Copilot with MCP](https://devblogs.microsoft.com/microsoft365dev/build-declarative-agents-for-microsoft-365-copilot-with-mcp/).
 
+## Auto-deploy to Azure Container Apps
+
+This repo includes a workflow at `.github/workflows/containerapp-autodeploy.yml` that automatically deploys on every push to `main`.
+
+### 1) Configure GitHub Secrets
+
+- `AZURE_CREDENTIALS` — service principal JSON for `azure/login`
+- `AZURE_STORAGE_CONNECTION_STRING` — Azure Table Storage connection string
+
+### 2) Configure GitHub Variables
+
+- `AZURE_RESOURCE_GROUP`
+- `AZURE_LOCATION` (for example: `eastus`)
+- `AZURE_CONTAINERAPPS_ENVIRONMENT`
+- `AZURE_CONTAINER_APP_NAME`
+- `AZURE_CONTAINER_REGISTRY` (ACR name, globally unique)
+
+### 3) Deploy
+
+- Push to `main` (or run workflow manually via **Actions → Deploy MCP Server to Azure Container Apps**).
+- The workflow builds Docker image, pushes to ACR, then creates/updates the Container App.
+- After deployment, endpoint format is: `https://<container-app-fqdn>/mcp`.
+
 ## Sample Prompts
 
 | Prompt | What it does |

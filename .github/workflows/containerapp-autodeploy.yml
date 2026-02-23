@@ -1,0 +1,122 @@
+name: Deploy MCP Server to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  LOCATION: ${{ vars.AZURE_LOCATION }}
+  CONTAINERAPPS_ENVIRONMENT: ${{ vars.AZURE_CONTAINERAPPS_ENVIRONMENT }}
+  CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+  ACR_NAME: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+  IMAGE_NAME: zava-mcpserver
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install Azure Container Apps extension
+        run: |
+          az extension add --name containerapp --upgrade
+
+      - name: Validate required GitHub variables
+        run: |
+          test -n "${RESOURCE_GROUP}" || (echo "Missing variable: AZURE_RESOURCE_GROUP" && exit 1)
+          test -n "${LOCATION}" || (echo "Missing variable: AZURE_LOCATION" && exit 1)
+          test -n "${CONTAINERAPPS_ENVIRONMENT}" || (echo "Missing variable: AZURE_CONTAINERAPPS_ENVIRONMENT" && exit 1)
+          test -n "${CONTAINER_APP_NAME}" || (echo "Missing variable: AZURE_CONTAINER_APP_NAME" && exit 1)
+          test -n "${ACR_NAME}" || (echo "Missing variable: AZURE_CONTAINER_REGISTRY" && exit 1)
+
+      - name: Ensure resource group, ACA environment, and ACR exist
+        run: |
+          az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}"
+
+          if ! az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
+            az acr create \
+              --name "${ACR_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --sku Basic \
+              --admin-enabled true
+          else
+            az acr update \
+              --name "${ACR_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --admin-enabled true
+          fi
+
+          if ! az containerapp env show --name "${CONTAINERAPPS_ENVIRONMENT}" --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
+            az containerapp env create \
+              --name "${CONTAINERAPPS_ENVIRONMENT}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --location "${LOCATION}"
+          fi
+
+      - name: Build and push image to ACR
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query loginServer -o tsv)
+          IMAGE_TAG="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${GITHUB_SHA}"
+
+          az acr login --name "${ACR_NAME}"
+          docker build -t "${IMAGE_TAG}" .
+          docker push "${IMAGE_TAG}"
+
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+
+      - name: Create or update Container App
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        run: |
+          test -n "${AZURE_STORAGE_CONNECTION_STRING}" || (echo "Missing secret: AZURE_STORAGE_CONNECTION_STRING" && exit 1)
+
+          ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query 'passwords[0].value' -o tsv)
+          ACR_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query loginServer -o tsv)
+
+          if az containerapp show --name "${CONTAINER_APP_NAME}" --resource-group "${RESOURCE_GROUP}" >/dev/null 2>&1; then
+            az containerapp secret set \
+              --name "${CONTAINER_APP_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --secrets azure-storage-connection-string="${AZURE_STORAGE_CONNECTION_STRING}"
+
+            az containerapp update \
+              --name "${CONTAINER_APP_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --image "${IMAGE_TAG}" \
+              --set-env-vars PORT=3001 AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connection-string \
+              --target-port 3001 \
+              --ingress external
+          else
+            az containerapp create \
+              --name "${CONTAINER_APP_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --environment "${CONTAINERAPPS_ENVIRONMENT}" \
+              --image "${IMAGE_TAG}" \
+              --registry-server "${ACR_LOGIN_SERVER}" \
+              --registry-username "${ACR_USERNAME}" \
+              --registry-password "${ACR_PASSWORD}" \
+              --secrets azure-storage-connection-string="${AZURE_STORAGE_CONNECTION_STRING}" \
+              --env-vars PORT=3001 AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connection-string \
+              --target-port 3001 \
+              --ingress external
+          fi
+
+      - name: Show deployed endpoint
+        run: |
+          APP_FQDN=$(az containerapp show --name "${CONTAINER_APP_NAME}" --resource-group "${RESOURCE_GROUP}" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Deployed URL: https://${APP_FQDN}/mcp"
