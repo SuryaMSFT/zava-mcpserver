@@ -98,9 +98,13 @@ jobs:
               --name "${CONTAINER_APP_NAME}" \
               --resource-group "${RESOURCE_GROUP}" \
               --image "${IMAGE_TAG}" \
-              --set-env-vars PORT=3001 AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connection-string \
-              --target-port 3001 \
-              --ingress external
+              --set-env-vars PORT=3001 AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connection-string
+
+            az containerapp ingress enable \
+              --name "${CONTAINER_APP_NAME}" \
+              --resource-group "${RESOURCE_GROUP}" \
+              --type external \
+              --target-port 3001
           else
             az containerapp create \
               --name "${CONTAINER_APP_NAME}" \
